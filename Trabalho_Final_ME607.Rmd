@@ -28,7 +28,9 @@ output:
          href: "https://www.linkedin.com/in/thiagomiyaji/", align: right}
       - {icon: "fa-linkedin", title: "Tiago cruz", target: "_blank",
          href: "https://www.linkedin.com/in/tiago-cruz-b65721284/", align: right}
-    source: embed
+      - {icon: "fa-github", title: "Código Fonte", target: "_blank",
+         href: "https://github.com/Tiago-HCruz/Dogecoin/blob/main/Trabalho_Final_ME607.Rmd", align: right}
+    #source: embed
    
 lang: pt-BR
 runtime: shiny
