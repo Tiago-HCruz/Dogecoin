@@ -1,0 +1,604 @@
+---
+title: "DOGECOIN"
+output:
+  flexdashboard::flex_dashboard:
+    logo: dogecoin.png
+    favicon: dogecoin.png
+    theme:
+      version: 4
+      bootswatch: "default"
+      bg: "#101010"
+      fg: "#FDF7F7"
+      navbar-bg: "#101010"
+      primary: "#f1d989"
+      enable-gradients: "TRUE"
+      enable-shadows: "TRUE"
+      base_font:
+        google: Titillium Web
+      heading_font:
+        google: Titillium Web
+      code_font:
+        google: Roboto Slab
+    orientation: columns
+    vertical_layout: fill
+    navbar:
+      - {icon: "fa-linkedin", title: "Andrei Piscitelli", target: "_blank",
+         href: "https://www.linkedin.com/in/andrei-piscitelli-857032100/", align: right}
+      - {icon: "fa-linkedin", title: "Thiago Makoto", target: "_blank",
+         href: "https://www.linkedin.com/in/thiagomiyaji/", align: right}
+      - {icon: "fa-linkedin", title: "Tiago cruz", target: "_blank",
+         href: "https://www.linkedin.com/in/tiago-cruz-b65721284/", align: right}
+    source: embed
+   
+lang: pt-BR
+runtime: shiny
+---
+
+```{css}
+.navbar {
+     font-size: .800rem;
+    font-weight: 600;
+    text-transform: uppercase;
+   
+     --bs-navbar-padding-y: 0.1rem; 
+}
+
+body {
+    font-weight: 100;
+}
+
+:root {
+--bs-body-font-size: 1rem;
+}
+ 
+   
+.chart-wrapper, .nav-tabs-custom, .sbframe-commentary{
+border: 0px solid;
+}
+
+.chart-title{
+font-size: 1.2rem;
+border-bottom: 0px solid
+}
+
+.card, .well {
+  --bs-card-border-color: rgb(0 0 0 / 0%);
+}
+
+.value-box.value-box-primary {
+    background-color: rgb(245 216 119);
+    color: #1b1a1a;
+    box-shadow: 2px 2px 3px 0px rgb(16 16 16);
+}
+
+.value-box.value-box-primary .icon i {
+    color: rgb(27 26 26 / 75%);
+}
+
+.value-box {
+  height: 110px;
+}
+```
+
+```{r setup, include=FALSE, context = "server"}
+library(flexdashboard)
+library(shiny)
+library(ggplot2)
+library(thematic)
+library(yfR)
+library(plotly)
+library(rugarch)
+library(bslib)
+library(scales)
+library(forecast)
+library(tidyverse)
+library(car)
+library(tibble)
+library(fpp3)
+library(GAS)
+
+library(formattable)
+
+
+thematic::thematic_rmd()
+ thematic_shiny(font = "auto")
+ thematic_on(accent = "#f1d989")
+
+# Incremento para o Value-Box
+top_text_style <- 
+"background-color:rgba(39, 128, 227, 0.0); 
+border-color:rgba(39, 128, 227, 0.0); 
+position: absolute; 
+overflow: hidden; 
+left: 3%; top: 1px; 
+right: 0px; 
+bottom: 0px; width:100%"
+
+bottom_text_style <- 
+"position: absolute;
+bottom: 0;
+left: 10px;
+font-weight: 600;"
+```
+
+
+```{r Banco de dados, include=FALSE}
+# Defininfo, o banco de dados para o modelo o atualizado orignal.
+nome <- "DOGE-USD"   
+data_fim <- Sys.Date()
+data_ini <- (as.Date(data_fim)-(365*2))-1
+ 
+precos_orig <- yf_get(tickers = nome, 
+                 first_date = data_ini, 
+                 last_date = data_fim)
+
+precos <- yf_get(tickers = nome, 
+                 first_date = "2021-05-31", 
+                 last_date = "2023-06-01")
+
+date <- as.Date(precos$ref_date)
+year <- as.numeric(format(date, '%Y'))
+month <- as.numeric(format(date, '%m'))
+day <- as.numeric(format(date, '%d'))
+
+precosdata <- cbind(precos, year, month, day)
+
+precosadjts <- na.omit(precos) %>% 
+  select(ref_date, ret_adjusted_prices)%>% 
+  tsibble::as_tsibble(index = ref_date)
+
+inds2 <- seq(as.Date("2021-06-01"), as.Date("2023-06-01"), by = "day")
+
+tsprecosadjts <- ts(precosadjts$ret_adjusted_prices, 
+                    start = c(2021, as.numeric(format(inds2[1], "%j"))), 
+                    freq = 365)
+
+retornos = precos$ret_adjusted_prices[-1]
+
+```
+
+```{r Analise Geral, include=FALSE}
+# Escolha do Modelo
+## ARIMA
+fit1retornos <- auto.arima(retornos, seasonal = TRUE, trace = TRUE)
+
+### O teste retornou ARIMA(2,0,1) com média 0 como menor AIC, AICc e BIC. Vamos avaliar nos dados
+
+resi_ari202 <- checkresiduals(fit1retornos, plot = FALSE)
+
+#qqPlot(resid(fit1retornos))
+
+### Podemos observar que não aparenta existir normalidade entre os resíduos do modelo.
+### Portanto, é seguro esperarmos que um modelo SARIMA não se adeque aos dados
+
+
+## GARCH
+#########################################################################
+# Como este são dados de volatilidade de retorno, testaremos GARCH (1,1)
+
+spec1retorno <- ugarchspec(mean.model = list(armaOrder = c(2, 1), 
+                                             include.mean = TRUE),
+                           variance.model = list(model = 'sGARCH', 
+                                                 garchOrder = c(1, 1)),
+                           distribution = 'std')
+
+fit_rugarch_retorno <- ugarchfit(spec1retorno,
+                                 data = precos %>%
+                                   select(ref_date,
+                                          ret_adjusted_prices) %>%
+                                   na.omit()
+                                 ,solver = 'hybrid')
+
+e_hat = fit_rugarch_retorno@fit$residuals/fit_rugarch_retorno@fit$sigma
+
+#########################################################################
+# Agora, testaremos GARCH (2,1) std
+
+spec3retorno <- ugarchspec(mean.model = list(armaOrder = c(2, 1), 
+                                             include.mean = TRUE),
+                           variance.model = list(model = 'sGARCH', 
+                                                 garchOrder = c(2,1)),
+                           distribution = 'std')
+
+fit3_rugarch_retorno <- ugarchfit(spec3retorno, 
+                                  data = precos %>%
+                                    select(ref_date,
+                                           ret_adjusted_prices) %>%
+                                    na.omit(),
+                                  solver = 'hybrid')
+
+e_hat3 = fit3_rugarch_retorno@fit$residuals/fit3_rugarch_retorno@fit$sigma
+
+### fit para os modelos atuais
+fit3_rugarch_retorno_orig <- ugarchfit(spec3retorno, 
+                                  data = precos_orig %>%
+                                    select(ref_date,
+                                           ret_adjusted_prices) %>%
+                                    na.omit(),
+                                  solver = 'hybrid')
+
+e_hat3_orig = fit3_rugarch_retorno_orig@fit$residuals/fit3_rugarch_retorno_orig@fit$sigma
+
+#########################################################################
+# Agora, testaremos GARCH (3,3)
+
+spec4retorno <- ugarchspec(mean.model = list(armaOrder = c(2, 1), include.mean = TRUE),
+                           variance.model = list(model = 'sGARCH', garchOrder = c(3,3)),
+                           distribution = 'std')
+
+fit4_rugarch_retorno <- ugarchfit(spec4retorno, 
+                                  data = precos %>%
+                                            select(ref_date,
+                                                   ret_adjusted_prices) %>%
+                                            na.omit(), 
+                                  solver = 'hybrid')
+
+e_hat4 = fit4_rugarch_retorno@fit$residuals/fit4_rugarch_retorno@fit$sigma
+
+###########################################################################
+#Testar para ver qual melhor encaixa
+infocriteriaAIC <- c(infocriteria(fit_rugarch_retorno)[1],
+                     infocriteria(fit3_rugarch_retorno)[1],
+                     infocriteria(fit4_rugarch_retorno)[1])
+
+infocriteriaBIC <- c(infocriteria(fit_rugarch_retorno)[2],
+                     infocriteria(fit3_rugarch_retorno)[2],
+                     infocriteria(fit4_rugarch_retorno)[2])
+
+likelihood <- c(likelihood(fit_rugarch_retorno),
+                likelihood(fit3_rugarch_retorno),
+                likelihood(fit4_rugarch_retorno))
+
+shapiro.test <- c(shapiro.test(e_hat)[2], 
+                  shapiro.test(e_hat3)[2],
+                  shapiro.test(e_hat4)[2])
+
+##################
+## Temos o modelo 2 melhor
+
+##################
+
+
+
+```
+
+
+Previsão {data-icon="fa-chart-line"}
+===
+
+Column {data-width=500}
+-----------------------------------------------------------------------
+
+### Serie: Retorno ajustado da criptomoeda ao longo do Tempo
+```{r}
+renderPlotly({
+ 
+  theme_set(theme_classic())
+           
+ 
+  g1 <- precos_orig %>%
+    ggplot(aes(text = paste0("<b>Data:</b> ",
+                             format(ref_date, '%d/%m/%Y'),
+                             "<br>",
+                             "<b>Retorno Ajustado:</b> US$",
+                             scales::number(round(ret_adjusted_prices,2),
+                                            scale = 2,
+                                            big.mark = ".",
+                                            decimal.mark = ",")
+                             ),group = 1)) +
+  geom_line(aes(x =ref_date, y = ret_adjusted_prices), color = "#f1d989") +
+              theme(panel.grid.major.y =  element_line(colour = "#1b1a1a", size = 0.9))+
+  labs(x = "Data", y = "Retorno")
+ 
+  plotly::ggplotly(g1,
+         dynamicTicks = TRUE,
+         tooltip = c("text")) %>%
+  rangeslider() %>%
+    config(locale = "pt-br")
+ 
+})
+```
+
+### Historia {data-height=300}
+
+Dogecoin é uma criptomoeda (moeda digital) inspirada no meme "doge" (comentado muito nas redes sociais no final de 2013) referente ao cachorro Shiba Inu. A moeda digital foi desenvolvida por Billy Markus de Portland em 2014 que de início, alguns dos seus objetivos era tornar mais acessível o Dogecoin ao público e a sua popularidade se voltou em torno do público geeks(nerds). Vale ressaltar que teve eventos que popularizaram a moeda como em 2014 teve uma doação de 55 mil dólares para as corridas de Stockcar dos EUA e arrecadaram 25 mil dólares para patrocinar uma equipe jamaicana para os jogos Olímpicos de Inverno da Rússia, como também, no fórum do Reddit, a comunidade da moeda com cerca de 116 mil usuários têm carteiras com mais de 10 mil dólares em Dogecoin e fazem em torno de 1.300 transações por hora na blockchain da Dogecoin. 
+
+
+Column {data-width=500 .tabset .tabset-fade}
+-----------------------------------------------------------------------
+### Previsão do modelo GARCH(2,1) 
+```{r}
+forecast3_garch_retorno_orig <- ugarchforecast(fitORspec =
+                                                 fit3_rugarch_retorno_orig,
+                                               n.ahead = 7)
+
+renderPlot({
+  forecast3_garch_retorno_orig %>% 
+    plot(which=1)
+  })
+```
+
+
+
+### Tabela de previsões 
+```{r}
+renderTable({
+  tibble::tibble(Data = format(c(data_fim+1, data_fim+2, data_fim+3, 
+                        data_fim+4, data_fim+5, data_fim+6, 
+                        data_fim+7), format = '%d/%m/%Y'),
+               `Retorno ajustado` = forecast3_garch_retorno_orig@forecast[["seriesFor"]] %>% as.vector())
+  }, caption = "Previsão para os próximos dias pelo modelo GARCH(2,1)",  
+             hover = F,
+             spacing = "xs",
+             align = "c",
+             digits = 6)
+
+```
+
+
+Estatística {data-icon="fa-clipboard"}
+===
+
+Column {data-width=600}
+-----------------------------------------------------------------------
+### Autocorrelação e Autocorrelação Parcial dos retorno dos preços ajustado {.no-title .no-padding}
+```{r}
+renderPlot({
+op = par(mfrow = c(2,2))
+
+acf(retornos,
+    ci.col = "#0fbab7",
+    main = "Série retorno ajustado")
+
+pacf(retornos,
+      main = "Série retorno ajustado",
+    ci.col = "#0fbab7")
+
+acf(retornos^2,
+      main = "Série retorno ajustado²",
+    ci.col = "#0fbab7")
+
+pacf(retornos^2,
+      main = "Série retorno ajustado²",
+    ci.col = "#0fbab7")
+
+par(op)
+
+})
+```
+
+Column {data-width=500 .no-padding}
+-----------------------------------------------------------------------
+
+### Decomposição {.no-title}
+```{r }
+dec1 <- decompose(tsprecosadjts)
+
+renderPlot({plot(dec1
+                 )
+  title(main = "
+Retorno ajustado")})
+
+```
+
+
+Column {data-width=500 .no-padding}
+-----------------------------------------------------------------------
+
+### Decomposição^2 {.no-title}
+```{r }
+dec2 <- decompose(tsprecosadjts^2)
+
+renderPlot({
+  plot(dec2
+       )
+  title(main = "
+Retorno ajustado²")
+  })
+
+```
+
+
+ARIMA {data-navmenu="Modelos" data-icon="ion-android-document"}
+=======================================================
+
+Column {data-width=500} 
+---
+
+### ARIMA(2,0,2) {.value-box .no-title}
+```{r}
+renderValueBox({
+  flexdashboard::valueBox(value = tags$p("ARIMA(2,0,2)",
+                                         style = "margin: 14px 0 3px 0;"),
+                          icon = "ion-ios-analytics-outline",
+                          caption = div(
+                            tags$p("Melhor modelo para ARIMA",
+                                    style = top_text_style),
+                            tags$h6("Com média zero", 
+                                    style = bottom_text_style))
+                          )
+                          
+  })
+
+```
+
+### Modelos
+```{r Inf ARIMA}
+ret_arima <- fit1retornos
+
+tabsetPanel(
+  tabPanel("ARIMA(2,0,2)",
+    renderTable({
+      tibble("ar1" = ret_arima[["coef"]][1],
+             "ar2" = ret_arima[["coef"]][2],
+             "ma1" = ret_arima[["coef"]][3],
+             "ma2" = ret_arima[["coef"]][4])
+      },
+      caption = "Coeficientes da ARIMA(2,0,2) com média zero",  
+      hover = F,
+      spacing = "xs",
+      align = "c",
+      digits = 4
+  ),
+  renderUI({HTML("<b><i>Demais Informações :</i></b>",
+                 "<br>",
+                  "sigma² = ", round(ret_arima[["sigma2"]],4),
+                 ",  log likelihood =",  round(ret_arima[["loglik"]],4),
+                 "<br>",
+                 "AIC=", round(ret_arima[["aic"]],2), 
+                 ", AICc=", round(ret_arima[["aicc"]],2),
+                 "e BIC=", round(ret_arima[["bic"]],2))
+    })
+  ),
+  tabPanel("Comparação entre os modelos",
+           renderUI({HTML("Com base no codigo 
+                          foi encontrado os melhores modelos, por aproximação, alguns deles: ",
+                          "<br>",
+                          "   ARIMA(2,0,2) com média zero: -2189.332",
+                          "<br>",
+                          "   ARIMA(2,0,1) com média zero: -2188.236",
+                          "<br>",
+                          "   ARIMA(3,0,1) com média zero: -2188.345",
+                          "<br>",
+                          "   ARIMA(2,0,2) com média diferente de zero: -2187.516",
+                          
+                          "<br>",
+                          "E sem aproximação, ARIMA(2,0,2) com média zero: -2189.332")}))
+)
+
+```
+
+### Teste {.no-title data-height=180}
+
+```{r}
+renderTable({
+  tibble("Q*" = 
+           resi_ari202[["statistic"]][["Q*"]],
+         "Graus de liberdade" =
+           as.integer(resi_ari202[["parameter"]][["df"]]),
+         "P-valor" = resi_ari202[["p.value"]])
+  },
+  caption = "Teste de Ljung-Box para os resíduos",  
+  hover = F,
+  spacing = "xs",
+  align = "c",
+  digits = 4)
+```
+
+
+Column {data-width=500}
+-----------------------------------------------------------------------
+
+### Residuos {.no-title}
+```{r}
+renderPlot({
+  checkresiduals(fit1retornos, test=FALSE, plot = TRUE)
+})
+
+```
+
+Column {data-width=500}
+-----------------------------------------------------------------------
+
+### Normalidade dos resíduos {.no-title}
+```{r Normalidade dos resíduos}
+renderPlot({
+ qqPlot(resid(fit1retornos),
+        main = "Normalidade dos resíduos",
+        col = "#e5e0e0",
+        col.lines= "#447bab",
+        ylab= "Resíduo",
+        xlab= "Quantis da normal",
+        grid = FALSE,
+        envelope=list(style="lines"),
+        las = 1,
+        id = FALSE) 
+})
+
+```
+
+
+GARCH {data-navmenu="Modelos" data-icon="ion-android-document"}
+====
+
+Column {data-width=500} 
+---
+
+### GARCH(2,0,2) {.value-box .no-title}
+```{r}
+renderValueBox({
+  flexdashboard::valueBox(value = tags$p("GARCH(2,1)",
+                                         style = "margin: 14px 0 3px 0;"),
+                          icon = "ion-ios-analytics-outline",
+                          caption = div(
+                            tags$p("Melhor modelo para o GARCH",
+                                    style = top_text_style),
+                            tags$h6(" ", 
+                                    style = bottom_text_style))
+                          )
+                          
+  })
+
+```
+
+### Informações dos Modelos
+```{r Inf GARCH}
+
+  tabPanel("Informações dos Modelos",
+           renderTable({
+             tibble::tibble("Modelo" = c("GARCH(1,1)", "GARCH(2,1)",
+                                         "GARCH(3,3)"),
+                            "Akaike(AIC)" = c(infocriteriaAIC[1], 
+                                         infocriteriaAIC[2],
+                                         infocriteriaAIC[3]),
+                            "Bayes(BIC)" = c(infocriteriaBIC[1], 
+                                        infocriteriaBIC[2],
+                                        infocriteriaBIC[3]),
+                            "likelihood" = c(likelihood[1], 
+                                             likelihood[2],
+                                             likelihood[3]),
+                            "shapiro.test" = c("1.74 10^-22",
+                                               "1.33 10^-22",
+                                               "1.88 10^-22")
+                            ) 
+             },
+             caption = "Informação Gerais dos Modelos",  
+             hover = F,
+             spacing = "xs",
+             align = "c",
+             digits = 4),
+           
+           renderText({paste("Desse modo, como o modelo GARCH(2,1), foi mais significante em 'Akaike(AIC)' e 'shapiro.teste', temos o melhor modelo entre os três analisados.")}))
+
+
+```
+
+Column {data-width=500} 
+---
+
+### Residuos {.no-title}
+```{r}
+renderPlot({
+  op = par(mfrow = c(1,2))
+  acf(e_hat3, ci.col = "#0fbab7", main = "Série dos resíduos")
+  acf(e_hat3^2, ci.col = "#0fbab7", main = "Série dos resíduos²")
+  par(op)
+})
+```
+
+
+### Normalidade {.no-title}
+```{r}
+renderPlot({
+  qqPlot(e_hat3,
+         main = "Normalidade dos resíduos",
+        col = "#e5e0e0",
+        col.lines= "#0fbab7",
+        xlab= "Quantis da normal",
+        grid = FALSE,
+        envelope=list(style="lines"),
+        las = 1,
+        id = FALSE)
+})
+```
+
